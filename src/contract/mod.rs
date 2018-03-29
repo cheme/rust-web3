@@ -3,7 +3,8 @@
 use ethabi;
 
 use std::time;
-use api::Eth;
+use api::{Eth, Namespace};
+use confirm;
 use contract::tokens::{Detokenize, Tokenize};
 use types::{Address, Bytes, CallRequest, H256, TransactionRequest, TransactionCondition, U256, BlockNumber};
 use {Transport};
@@ -104,6 +105,39 @@ impl<T: Transport> Contract<T> {
         }).into()
       })
       .unwrap_or_else(Into::into)
+  }
+
+  /// Execute a contract function and wait for confirmations
+  pub fn call_with_confirmations<P>(&self, func: &str, params: P, from: Address, options: Options, confirmations: usize)
+    -> confirm::SendTransactionWithConfirmation<T>
+    where P: Tokenize
+  {
+    let poll_interval = time::Duration::from_secs(1);
+
+    self.abi.function(func.into())
+        .and_then(|function| function.encode_input(&params.into_tokens()))
+        .map(|fn_data| {
+          let transaction_request = TransactionRequest {
+            from: from,
+            to: Some(self.address.clone()),
+            gas: options.gas,
+            gas_price: options.gas_price,
+            value: options.value,
+            nonce: options.nonce,
+            data: Some(Bytes(fn_data)),
+            condition: options.condition,
+          };
+
+          confirm::send_transaction_with_confirmation(self.eth.transport().clone(), transaction_request, poll_interval, confirmations)
+        })
+        .unwrap_or_else(|e| {
+          // TODO [ToDr] SendTransactionWithConfirmation should support custom error type (so that we can return
+          // `contract::Error` instead of more generic `Error`.
+          confirm::SendTransactionWithConfirmation::from_err(
+            self.eth.transport().clone(),
+            ::error::ErrorKind::Decoder(format!("{:?}", e))
+          )
+        })
   }
 
   /// Estimate gas required for this function call.
@@ -214,7 +248,7 @@ mod tests {
   fn should_call_a_contract_function() {
     // given
     let mut transport = TestTransport::default();
-    transport.set_response(rpc::Value::String(format!("0x{:?}", H256::from(5))));
+    transport.set_response(rpc::Value::String(format!("{:?}", H256::from(5))));
 
     let result = {
       let token = contract(&transport);
@@ -235,7 +269,7 @@ mod tests {
   fn should_estimate_gas_usage() {
     // given
     let mut transport = TestTransport::default();
-    transport.set_response(rpc::Value::String(format!("0x{:?}", U256::from(5))));
+    transport.set_response(rpc::Value::String(format!("{:?}", U256::from(5))));
 
     let result = {
       let token = contract(&transport);
@@ -263,7 +297,7 @@ mod tests {
       let token = contract(&transport);
 
       // when
-      token.query("balanceOf", (Address::from(5)), None, Options::default(), None).wait().unwrap()
+      token.query("balanceOf", Address::from(5), None, Options::default(), None).wait().unwrap()
     };
 
     // then
